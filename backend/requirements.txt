@@ -3,3 +3,5 @@ Flask-Cors
 pandas
 scikit-learn
 joblib
+celery==5.3.6
+redis

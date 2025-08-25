@@ -1,70 +1,44 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import pandas as pd
-import joblib
+from celery.result import AsyncResult
+from tasks import run_batch_prediction
+from celery_config import celery_app
 
-# Flask uygulamasını başlat
 app = Flask(__name__)
-# React'tan gelen isteklere izin vermek için CORS'u etkinleştir
 CORS(app)
 
-# Modeli ve ölçekleyiciyi yükle
-try:
-    model = joblib.load("./models/LogReg_Heavy_modell.pkl")
-    scaler = joblib.load("./models/LogReg_Heavy_scalerr.pkl")
-    print("Model ve ölçekleyici başarıyla yüklendi.")
-except Exception as e:
-    print(f"Model yüklenirken hata oluştu: {e}")
-    model = None
-    scaler = None
-
-# Modelin eğitildiği sütunların listesi (scaler'dan alınıyor)
-# Bu sıralama, modelin doğru tahmin yapması için hayati önem taşır.
-MODEL_FEATURES = [
-    'cart_abandon_rate', 'ReturnRate', 'RepeatPurchaseRate', 'AvgBasketValue',
-    'Last7DaysLogins', 'SupportInteractions', 'MonthlyPurchaseFreq',
-    'BrandLoyaltyScore', 'total_purchase_count', 'avg_discount_percentage_used'
-]
 
 @app.route('/predict', methods=['POST'])
-def predict():
-    if not model or not scaler:
-        return jsonify({"error": "Model veya ölçekleyici yüklenemedi, sunucu loglarını kontrol edin."}), 500
+def start_prediction_task():
+    """Dosyayı al, tahmin görevini başlat ve görev ID'sini döndür."""
+    if 'file' not in request.files:
+        return jsonify({"error": "İstekte dosya bulunamadı."}), 400
+
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({"error": "Dosya seçilmedi."}), 400
 
     try:
-        # Gelen JSON verisini al
-        data = request.get_json()
-        
-        # Gelen veriyi bir Pandas DataFrame'e çevir
-        input_df = pd.DataFrame([data])
-        
-        # Modelin beklediği özelliklerin veri içinde olduğundan emin ol
-        for col in MODEL_FEATURES:
-            if col not in input_df.columns:
-                return jsonify({"error": f"Eksik özellik: '{col}'"}), 400
-
-        # Veriyi modelin eğitildiği sıraya göre düzenle
-        input_df = input_df[MODEL_FEATURES]
-
-        # Sayısal verileri ölçeklendir
-        input_scaled = scaler.transform(input_df)
-
-        # Tahmin yap
-        prediction = model.predict(input_scaled)
-        probability = model.predict_proba(input_scaled)
-
-        # Churn olma olasılığını al (% olarak)
-        churn_probability = probability[0][1] * 100
-
-        # Sonucu JSON formatında geri döndür
-        return jsonify({
-            'churn_prediction': int(prediction[0]), # 0: Kalır, 1: Gider
-            'churn_probability': f"{churn_probability:.2f}%"
-        })
-
+        json_data_string = file.read().decode('utf-8')
+        task = run_batch_prediction.delay(json_data_string)
+        return jsonify({"task_id": task.id}), 202
     except Exception as e:
-        return jsonify({"error": f"Tahmin sırasında bir hata oluştu: {str(e)}"}), 500
+        return jsonify({"error": f"Görev başlatılırken hata: {str(e)}"}), 500
+
+
+@app.route('/status/<task_id>', methods=['GET'])
+def get_task_status(task_id):
+    """Verilen görev ID'sinin durumunu ve sonucunu kontrol et."""
+    task_result = AsyncResult(task_id, app=celery_app)
+
+    if task_result.successful():
+        response = {"state": task_result.state, "result": task_result.result}
+    elif task_result.state == 'FAILURE':
+        response = {"state": task_result.state, "error": str(task_result.info)}
+    else:
+        response = {"state": task_result.state}
+    return jsonify(response)
+
 
 if __name__ == '__main__':
-    # Sunucuyu başlat (debug=True geliştirme aşaması için)
-    app.run(port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5000, debug=True)

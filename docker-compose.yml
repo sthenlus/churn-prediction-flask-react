@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  # Backend Servisi (Flask + Model)
+  backend:
+    build: ./backend
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./backend:/app
+    depends_on:
+      - redis
+
+  # Frontend Servisi (React)
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:80"
+    volumes:
+      - ./frontend/src:/app/src
+    depends_on:
+      - backend
+
+  # Redis Servisi (Celery için)
+  redis:
+    image: "redis:alpine"
+    ports:
+      - "6379:6379"
